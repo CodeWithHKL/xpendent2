@@ -485,10 +485,10 @@ class _HomeScreenState extends State<HomeScreen> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOutCubic,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF6C5CE7).withOpacity(0.2) : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+          color: isSelected ? const Color(0xFF6C5CE7).withOpacity(0.22) : Colors.transparent,
+          borderRadius: BorderRadius.circular(22),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -497,7 +497,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Icon(
                   icon,
                   color: isSelected ? const Color(0xFF6C5CE7) : Colors.grey,
-                  size: 24,
+                  size: 26,
                 ),
             AnimatedClipRect(
               open: isSelected,
@@ -512,7 +512,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: const TextStyle(
                     color: Color(0xFF6C5CE7),
                     fontWeight: FontWeight.bold,
-                    fontSize: 13,
+                    fontSize: 14,
                   ),
                 ),
               ),
@@ -1156,8 +1156,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: pages,
       ),
       bottomNavigationBar: Container(
-        height: 65,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        height: 87,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: const BoxDecoration(
           color: Color(0xFF132247),
           boxShadow: [

@@ -43,8 +43,10 @@ dev_dependencies:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/Xpendentlogo.png"
+  image_path: "assets/app_icon.png"
   remove_alpha_ios: true
+  adaptive_icon_background: "#0F1626"
+  adaptive_icon_foreground: "assets/app_icon.png"
 
 flutter_native_splash:
   color: "#0F1626"
@@ -57,6 +59,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/app_icon.png
     - assets/Xpendentlogo.png
     - assets/Jan.png
     - assets/Feb.png

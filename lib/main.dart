@@ -13,12 +13,53 @@ import 'screens/dashboard/home_screen.dart';
 import 'services/notification_service.dart';
 import 'splash_screen.dart';
 
-// Top-level background handler for mobile FCM messages
+// Top-level background handler for mobile FCM messages when app is terminated/backgrounded
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // If the push notification includes a notification payload, show it locally
+  final RemoteNotification? notification = message.notification;
+  if (notification != null) {
+    final FlutterLocalNotificationsPlugin plugin = FlutterLocalNotificationsPlugin();
+
+    // Initialize high importance channel for background display
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'group_messages_channel',
+      'Group Messages',
+      importance: Importance.max,
+    );
+
+    await plugin
+        .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+
+    await plugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
+
+    await plugin.show(
+      notification.hashCode,
+      notification.title,
+      notification.body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'group_messages_channel',
+          'Group Messages',
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+          icon: '@mipmap/ic_launcher',
+        ),
+      ),
+    );
+  }
 }
 
 // Top-level background worker that polls Firestore on Android when closed
@@ -43,6 +84,18 @@ void callbackDispatcher() {
           .get();
 
       final plugin = FlutterLocalNotificationsPlugin();
+
+      const AndroidNotificationChannel channel = AndroidNotificationChannel(
+        'group_messages_channel',
+        'Group Messages',
+        importance: Importance.max,
+      );
+
+      await plugin
+          .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(channel);
+
       await plugin.initialize(
         const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -104,6 +157,13 @@ Future<void> _setupPushNotifications() async {
     final messaging = FirebaseMessaging.instance;
 
     await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    // Ensure foreground presentation options allow banners
+    await messaging.setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
