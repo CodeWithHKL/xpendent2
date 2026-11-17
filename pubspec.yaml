@@ -1,0 +1,54 @@
+name: xpendent2
+description: "Xpendent: Student Budget Management Tracker App"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.3 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  scrollable_positioned_list: ^0.3.8
+  firebase_storage: ^12.4.10
+  path_provider: ^2.1.2
+  shared_preferences: ^2.3.3
+
+  # UI & Design Icons
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.1.2
+  country_flags: ^3.2.0
+
+  # Firebase Core Services
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.3
+
+  # App State & Formatting Helpers
+  provider: ^6.1.2
+  intl: ^0.19.0
+  flutter_local_notifications: ^19.5.0
+  timezone: ^0.10.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/Xpendentlogo.png
+    - assets/Jan.png
+    - assets/Feb.png
+    - assets/Mar.png
+    - assets/Apr.png
+    - assets/May.png
+    - assets/Jul.png
+    - assets/Aug.png
+    - assets/Sep.png
+    - assets/Oct.png
+    - assets/Nov.png
+    - assets/Dec.png

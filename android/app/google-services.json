@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "554906641576",
+    "project_id": "xpendent2-app",
+    "storage_bucket": "xpendent2-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:554906641576:android:3f94e0e5a12e047d088e9d",
+        "android_client_info": {
+          "package_name": "com.example.xpendent2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAP19bItXy1-wq5h9wMoS3zceijpkizVGc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
