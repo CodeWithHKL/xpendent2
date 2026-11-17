@@ -3000,6 +3000,8 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
     String selectedCategory = _kGroupExpenseCategories.first.name;
     _expenseAmountController.text = '00.00';
     bool isCustomSplit = false;
+    String? modalErrorText;
+
     final Map<String, TextEditingController> customSplitControllers = {
       for (final m in groupMembers) m: TextEditingController(text: '00.00')
     };
@@ -3035,6 +3037,11 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                 TextField(
                   controller: _expenseTitleController,
                   style: const TextStyle(color: _ShareTheme.textPrimary),
+                  onChanged: (_) {
+                    if (modalErrorText != null) {
+                      setModalState(() => modalErrorText = null);
+                    }
+                  },
                   decoration: InputDecoration(
                     labelText: 'What was it for?',
                     hintText: 'e.g. Dinner, Groceries, Grab',
@@ -3080,7 +3087,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                           color: _ShareTheme.accent, width: 2),
                     ),
                   ),
-                  onChanged: (_) => setModalState(() {}),
+                  onChanged: (_) => setModalState(() => modalErrorText = null),
                 ),
                 const SizedBox(height: 14),
                 const Text(
@@ -3148,6 +3155,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                           onChanged: (val) {
                             setModalState(() {
                               isCustomSplit = val;
+                              modalErrorText = null;
                               if (!val) {
                                 for (var c in customSplitControllers.values) {
                                   c.text = '00.00';
@@ -3167,7 +3175,11 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                     decoration: BoxDecoration(
                       color: _ShareTheme.card,
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white10),
+                      border: Border.all(
+                        color: modalErrorText != null
+                            ? Colors.redAccent.withOpacity(0.7)
+                            : Colors.white10,
+                      ),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3206,6 +3218,12 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                                     style: const TextStyle(
                                         color: _ShareTheme.textPrimary,
                                         fontSize: 13),
+                                    onChanged: (_) {
+                                      if (modalErrorText != null) {
+                                        setModalState(
+                                                () => modalErrorText = null);
+                                      }
+                                    },
                                     decoration: InputDecoration(
                                       prefixText: '$currencySymbol ',
                                       prefixStyle: const TextStyle(
@@ -3257,6 +3275,45 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                     ),
                   ),
                 ),
+
+                // --- IN-POPUP ERROR BANNER ---
+                if (modalErrorText != null) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withOpacity(0.16),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.redAccent.withOpacity(0.65),
+                      ),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.error_outline_rounded,
+                          color: Colors.redAccent,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            modalErrorText!,
+                            style: const TextStyle(
+                              color: Colors.redAccent,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
@@ -3272,7 +3329,22 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                       final amount = _Currency00Dot00Formatter.parseToDouble(
                           _expenseAmountController.text);
                       final note = _expenseNoteController.text.trim();
-                      if (title.isEmpty || amount <= 0) return;
+
+                      if (title.isEmpty) {
+                        setModalState(() {
+                          modalErrorText =
+                          'Please enter what this expense was for.';
+                        });
+                        return;
+                      }
+
+                      if (amount <= 0) {
+                        setModalState(() {
+                          modalErrorText =
+                          'Please enter an expense amount greater than ${currencySymbol}0.00.';
+                        });
+                        return;
+                      }
 
                       Map<String, double>? customSplitsMap;
                       if (isCustomSplit) {
@@ -3286,16 +3358,15 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                         }
 
                         if ((sumCustom - amount).abs() > 0.02) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                  'Custom splits total ($currencySymbol${sumCustom.toStringAsFixed(2)}) must equal expense amount ($currencySymbol${amount.toStringAsFixed(2)})!'),
-                              backgroundColor: Colors.redAccent,
-                            ),
-                          );
+                          setModalState(() {
+                            modalErrorText =
+                            'Custom splits total ($currencySymbol${sumCustom.toStringAsFixed(2)}) must equal the expense amount ($currencySymbol${amount.toStringAsFixed(2)}).';
+                          });
                           return;
                         }
                       }
+
+                      setModalState(() => modalErrorText = null);
 
                       final String displayName =
                       await _getCurrentUserDisplayName();
