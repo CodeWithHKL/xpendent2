@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,6 +11,92 @@ import 'package:intl/intl.dart';
 
 import '../../services/notification_service.dart';
 import '../groups/create_group_screen.dart';
+
+// =========================================================================
+// NUMERIC-ONLY CURRENCY FORMATTER (00.00 FORMAT, BLOCKS ALPHABETS)
+// =========================================================================
+
+class _Currency00Dot00Formatter extends TextInputFormatter {
+  static String formatFromCents(int cents) {
+    final int safeCents = cents < 0 ? 0 : cents;
+    final int whole = safeCents ~/ 100;
+    final int fraction = safeCents % 100;
+    return '${whole.toString().padLeft(2, '0')}.${fraction.toString().padLeft(2, '0')}';
+  }
+
+  static String formatFromDouble(double value) {
+    final int cents = (value * 100).round();
+    return formatFromCents(cents);
+  }
+
+  static double parseToDouble(String formatted) {
+    final digits = formatted.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) return 0.0;
+    final int cents = int.tryParse(digits) ?? 0;
+    return cents / 100.0;
+  }
+
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue,
+      TextEditingValue newValue,
+      ) {
+    // Strip everything except 0-9 so letters/symbols never appear
+    final String digitsOnly = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+
+    if (digitsOnly.isEmpty) {
+      return const TextEditingValue(
+        text: '00.00',
+        selection: TextSelection.collapsed(offset: 5),
+      );
+    }
+
+    // Cap at 999,999.99 to prevent integer overflow
+    final String boundedDigits = digitsOnly.length > 8
+        ? digitsOnly.substring(digitsOnly.length - 8)
+        : digitsOnly;
+
+    final int cents = int.tryParse(boundedDigits) ?? 0;
+    final String formatted = formatFromCents(cents);
+
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+// =========================================================================
+// EXPENSE CATEGORY HELPERS
+// =========================================================================
+
+class _ExpenseCategoryMeta {
+  final String name;
+  final IconData icon;
+  final Color color;
+
+  const _ExpenseCategoryMeta(this.name, this.icon, this.color);
+}
+
+const List<_ExpenseCategoryMeta> _kGroupExpenseCategories = [
+  _ExpenseCategoryMeta('Food & Dining', Icons.restaurant_rounded, Color(0xFFFF7675)),
+  _ExpenseCategoryMeta('Groceries', Icons.shopping_cart_outlined, Color(0xFF00C897)),
+  _ExpenseCategoryMeta('Transport', Icons.directions_car_outlined, Color(0xFF74B9FF)),
+  _ExpenseCategoryMeta('Accommodation', Icons.hotel_outlined, Color(0xFFA29BFE)),
+  _ExpenseCategoryMeta('Bills & Utilities', Icons.receipt_long_outlined, Color(0xFFFDCB6E)),
+  _ExpenseCategoryMeta('Entertainment', Icons.movie_outlined, Color(0xFFFD79A8)),
+  _ExpenseCategoryMeta('General', Icons.shopping_bag_outlined, Color(0xFF6C5CE7)),
+];
+
+_ExpenseCategoryMeta _getCategoryMeta(String? categoryName) {
+  if (categoryName == null || categoryName.trim().isEmpty) {
+    return _kGroupExpenseCategories.last;
+  }
+  return _kGroupExpenseCategories.firstWhere(
+        (c) => c.name.toLowerCase() == categoryName.trim().toLowerCase(),
+    orElse: () => _kGroupExpenseCategories.last,
+  );
+}
 
 // =========================================================================
 // PHONE NOTIFICATION DISPATCHER FOR GROUP MESSAGES & SHARED EXPENSES
@@ -27,12 +114,10 @@ class _GroupPhoneNotifier {
   bool _hasSeededInitialState = false;
   final Map<String, int> _lastNotifiedMsgMillis = {};
 
-  /// Tracks whichever group chat is currently open on screen so we don't
-  /// buzz the user while they are actively reading that group.
   String? activeOpenGroupId;
 
   Future<void> ensureInitialized() async {
-    if (_initialized) return;
+    if (_initialized || kIsWeb) return;
 
     const androidSettings =
     AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -60,9 +145,9 @@ class _GroupPhoneNotifier {
       List<QueryDocumentSnapshot> docs,
       String currentUid,
       ) async {
+    if (kIsWeb) return;
     await ensureInitialized();
 
-    // Seed existing timestamps on first load so old messages don't fire alerts
     if (!_hasSeededInitialState) {
       for (final doc in docs) {
         final data = doc.data() as Map<String, dynamic>;
@@ -84,7 +169,6 @@ class _GroupPhoneNotifier {
       final int msgMillis = ts.millisecondsSinceEpoch;
       final int? previousMillis = _lastNotifiedMsgMillis[groupId];
 
-      // Only notify if this is a newer event than what we last processed
       if (previousMillis != null && msgMillis <= previousMillis) {
         continue;
       }
@@ -92,8 +176,6 @@ class _GroupPhoneNotifier {
 
       final String? senderId = data['lastMessageSenderId'] as String?;
       if (senderId == null || senderId == currentUid) continue;
-
-      // Skip if user is currently viewing this exact group chat
       if (activeOpenGroupId == groupId) continue;
 
       final String groupName = (data['name'] as String?) ?? 'Group Expense';
@@ -105,7 +187,6 @@ class _GroupPhoneNotifier {
       final bool isExpenseAlert = rawMessage.startsWith('💵') ||
           rawMessage.contains('added shared expense:');
 
-      // Respect the user's Expense Notifications toggle for shared expenses
       if (isExpenseAlert) {
         final expenseEnabled =
         await _notificationService.isExpenseNotificationsEnabled();
@@ -161,7 +242,7 @@ class _GroupPhoneNotifier {
 }
 
 // =========================================================================
-// REUSABLE BOTTOM NAV ICON WITH WHATSAPP-STYLE NEW MESSAGE INDICATOR
+// REUSABLE BOTTOM NAV ICON WITH NEW MESSAGE INDICATOR
 // =========================================================================
 
 class ShareNavBadgeIcon extends StatefulWidget {
@@ -224,7 +305,6 @@ class _ShareNavBadgeIconState extends State<ShareNavBadgeIcon> {
         if (snapshot.hasData) {
           final docs = snapshot.data!.docs;
 
-          // Trigger phone notification for any newly arrived message or expense
           _GroupPhoneNotifier.instance
               .processGroupSnapshots(docs, widget.user.uid);
 
@@ -237,10 +317,9 @@ class _ShareNavBadgeIconState extends State<ShareNavBadgeIcon> {
         }
 
         final bool hasUnread = unreadGroupsCount > 0;
-
-        final IconData displayIcon =
-        (widget.isSelected || hasUnread) ? widget.activeIcon : widget.inactiveIcon;
-
+        final IconData displayIcon = (widget.isSelected || hasUnread)
+            ? widget.activeIcon
+            : widget.inactiveIcon;
         final Color displayColor = widget.isSelected
             ? widget.activeColor
             : (hasUnread ? const Color(0xFF00E676) : widget.inactiveColor);
@@ -248,25 +327,7 @@ class _ShareNavBadgeIconState extends State<ShareNavBadgeIcon> {
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
-              decoration: (!widget.isSelected && hasUnread)
-                  ? BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF00E676).withOpacity(0.35),
-                    blurRadius: 10,
-                    spreadRadius: 1,
-                  ),
-                ],
-              )
-                  : null,
-              child: Icon(
-                displayIcon,
-                color: displayColor,
-                size: 24,
-              ),
-            ),
+            Icon(displayIcon, color: displayColor, size: 24),
             if (hasUnread)
               Positioned(
                 right: -6,
@@ -301,7 +362,7 @@ class _ShareNavBadgeIconState extends State<ShareNavBadgeIcon> {
 }
 
 // =========================================================================
-// MAIN SHARE SCREEN (GROUP LIST WITH LIVE MESSAGE PREVIEW)
+// MAIN SHARE SCREEN (GROUP LIST)
 // =========================================================================
 
 class ShareScreen extends StatefulWidget {
@@ -347,10 +408,21 @@ class _ShareScreenState extends State<ShareScreen> {
         content: TextField(
           controller: codeController,
           keyboardType: TextInputType.number,
-          style: const TextStyle(color: textPrimary),
+          inputFormatters: [
+            FilteringTextInputFormatter.digitsOnly,
+            LengthLimitingTextInputFormatter(6),
+          ],
+          style: const TextStyle(
+            color: textPrimary,
+            fontSize: 18,
+            letterSpacing: 3,
+            fontWeight: FontWeight.bold,
+          ),
           decoration: InputDecoration(
             labelText: '6-Digit Code',
-            labelStyle: const TextStyle(color: textMuted),
+            hintText: '000000',
+            hintStyle: const TextStyle(color: Colors.white24),
+            labelStyle: const TextStyle(color: textMuted, letterSpacing: 0),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: const BorderSide(color: Colors.white24),
@@ -420,9 +492,7 @@ class _ShareScreenState extends State<ShareScreen> {
           backgroundColor: appAccent.withOpacity(0.2),
           backgroundImage: MemoryImage(bytes),
         );
-      } catch (e) {
-        debugPrint('Error decoding group avatar: $e');
-      }
+      } catch (_) {}
     }
 
     return CircleAvatar(
@@ -679,15 +749,10 @@ class _ShareScreenState extends State<ShareScreen> {
             icon: const Icon(Icons.qr_code_scanner, color: textMuted),
             onPressed: _showJoinGroupDialog,
           ),
-          IconButton(
-            icon: const Icon(Icons.more_vert, color: textMuted),
-            onPressed: () {},
-          ),
         ],
       ),
       body: Column(
         children: [
-          // Action Buttons Bar
           Container(
             color: appHeader,
             padding:
@@ -729,10 +794,7 @@ class _ShareScreenState extends State<ShareScreen> {
               ],
             ),
           ),
-
           const Divider(height: 1, color: Colors.white10),
-
-          // Groups Stream List & Empty State
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _db
@@ -803,7 +865,7 @@ class _ShareScreenState extends State<ShareScreen> {
                           ),
                           const SizedBox(height: 10),
                           const Text(
-                            'Create a group for roomies, trips, or events, or join an existing group with an invite code.',
+                            'Create a group for roommates, trips, or events, or join an existing group with an invite code.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: textMuted,
@@ -892,23 +954,416 @@ class _ShareScreenState extends State<ShareScreen> {
 }
 
 // =========================================================================
-// HELPER MODEL FOR CACHED USER PROFILE (NAME + EMAIL + DECODED AVATAR)
+// HELPER MODEL & TOP-LEVEL MEMBER PROFILE HELPERS
 // =========================================================================
 
 class _MemberProfile {
+  final String? uid;
   final String displayName;
   final String? email;
+  final String? bio;
+  final String? phone;
   final Uint8List? photoBytes;
 
   const _MemberProfile({
+    this.uid,
     required this.displayName,
     this.email,
+    this.bio,
+    this.phone,
     this.photoBytes,
   });
 }
 
+Uint8List? _decodeProfilePhotoSafe(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  try {
+    final clean = raw.contains(',') ? raw.split(',').last.trim() : raw.trim();
+    return base64Decode(clean);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<Map<String, dynamic>> _loadFullMemberStats({
+  required FirebaseFirestore db,
+  required String groupId,
+  required String? targetUid,
+  required String? fallbackName,
+  required _MemberProfile? prefetchedProfile,
+}) async {
+  _MemberProfile profile = prefetchedProfile ??
+      _MemberProfile(
+        uid: targetUid,
+        displayName: (fallbackName != null && fallbackName.trim().isNotEmpty)
+            ? fallbackName.trim()
+            : 'Member',
+      );
+
+  if (targetUid != null && targetUid.isNotEmpty) {
+    try {
+      final userDoc = await db.collection('users').doc(targetUid).get();
+      if (userDoc.exists && userDoc.data() != null) {
+        final u = userDoc.data()!;
+        final String? dbName = u['displayName'] as String?;
+        final String? dbEmail = u['email'] as String?;
+        final String? dbBio =
+        (u['bio'] ?? u['about'] ?? u['status']) as String?;
+        final String? dbPhone = (u['phone'] ?? u['phoneNumber']) as String?;
+        final String? dbPhoto = u['profilePicture'] as String?;
+
+        profile = _MemberProfile(
+          uid: targetUid,
+          displayName: (dbName != null && dbName.trim().isNotEmpty)
+              ? dbName.trim()
+              : profile.displayName,
+          email: dbEmail ?? profile.email,
+          bio: dbBio,
+          phone: dbPhone,
+          photoBytes: _decodeProfilePhotoSafe(dbPhoto) ?? profile.photoBytes,
+        );
+      }
+    } catch (_) {}
+  }
+
+  double totalGroupSpent = 0.0;
+  double memberPaid = 0.0;
+  int memberExpenseCount = 0;
+  int memberCount = 1;
+
+  try {
+    final groupDoc = await db.collection('groups').doc(groupId).get();
+    final members = (groupDoc.data()?['members'] as List?) ?? [];
+    if (members.isNotEmpty) memberCount = members.length;
+
+    final expSnap = await db
+        .collection('groups')
+        .doc(groupId)
+        .collection('expenses')
+        .get();
+
+    for (final doc in expSnap.docs) {
+      final d = doc.data();
+      final amt = (d['amount'] as num?)?.toDouble() ?? 0.0;
+      totalGroupSpent += amt;
+      if (targetUid != null && d['paidById'] == targetUid) {
+        memberPaid += amt;
+        memberExpenseCount++;
+      }
+    }
+  } catch (_) {}
+
+  final double fairShare = totalGroupSpent / memberCount;
+  final double netBalance = memberPaid - fairShare;
+
+  return {
+    'profile': profile,
+    'memberPaid': memberPaid,
+    'memberExpenseCount': memberExpenseCount,
+    'fairShare': fairShare,
+    'netBalance': netBalance,
+  };
+}
+
+Future<void> _showGroupMemberProfileSheet({
+  required BuildContext context,
+  required FirebaseFirestore db,
+  required String groupId,
+  required String currentUid,
+  required String? targetUid,
+  required String? fallbackName,
+  required _MemberProfile? prefetchedProfile,
+  bool isAdmin = false,
+  Widget? adminActionSection,
+}) async {
+  const Color appHeader = Color(0xFF132247);
+  const Color appCard = Color(0xFF1A2642);
+  const Color appAccent = Color(0xFF6C5CE7);
+  const Color textPrimary = Colors.white;
+  const Color textMuted = Colors.white54;
+
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: appHeader,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+        child: FutureBuilder<Map<String, dynamic>>(
+          future: _loadFullMemberStats(
+          db: db,
+          groupId: groupId,
+          targetUid: targetUid,
+          fallbackName: fallbackName,
+          prefetchedProfile: prefetchedProfile,
+        ),
+        builder: (context, snap) {
+          if (!snap.hasData) {
+            return const SizedBox(
+              height: 220,
+              child: Center(
+                child: CircularProgressIndicator(color: appAccent),
+              ),
+            );
+          }
+
+          final data = snap.data!;
+          final _MemberProfile profile = data['profile'] as _MemberProfile;
+          final double memberPaid = data['memberPaid'] as double;
+          final int expenseCount = data['memberExpenseCount'] as int;
+          final double fairShare = data['fairShare'] as double;
+          final double netBalance = data['netBalance'] as double;
+          final bool isMe = targetUid != null && targetUid == currentUid;
+          final String initial = profile.displayName.isNotEmpty
+              ? profile.displayName[0].toUpperCase()
+              : 'M';
+
+          return SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 18),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: appAccent.withOpacity(0.8),
+                      width: 2.5,
+                    ),
+                  ),
+                  child: ClipOval(
+                    child: profile.photoBytes != null
+                        ? Image.memory(
+                      profile.photoBytes!,
+                      width: 84,
+                      height: 84,
+                      fit: BoxFit.cover,
+                    )
+                        : Container(
+                      color: appAccent.withOpacity(0.22),
+                      alignment: Alignment.center,
+                      child: Text(
+                        initial,
+                        style: const TextStyle(
+                          color: Colors.cyanAccent,
+                          fontSize: 34,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        isMe
+                            ? '${profile.displayName} (You)'
+                            : profile.displayName,
+                        style: const TextStyle(
+                          color: textPrimary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    if (isAdmin) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00C897).withOpacity(0.18),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: const Color(0xFF00C897),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: const Text(
+                          'Group Admin',
+                          style: TextStyle(
+                            color: Color(0xFF00C897),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (profile.email != null &&
+                    profile.email!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    profile.email!,
+                    style: const TextStyle(color: textMuted, fontSize: 13),
+                  ),
+                ],
+                if (profile.phone != null &&
+                    profile.phone!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    profile.phone!,
+                    style: const TextStyle(color: textMuted, fontSize: 12.5),
+                  ),
+                ],
+                if (profile.bio != null &&
+                    profile.bio!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: appCard,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      profile.bio!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: appCard,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'MEMBER SUMMARY',
+                        style: TextStyle(
+                          color: textMuted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Total Paid',
+                                    style: TextStyle(
+                                        color: textMuted, fontSize: 11.5)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '\$${memberPaid.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    color: Colors.cyanAccent,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  '$expenseCount ${expenseCount == 1 ? 'expense' : 'expenses'}',
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 10.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Equal Share',
+                                    style: TextStyle(
+                                        color: textMuted, fontSize: 11.5)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '\$${fairShare.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    color: textPrimary,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Text(
+                                  'Per member',
+                                  style: TextStyle(
+                                      color: Colors.white38, fontSize: 10.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                    netBalance >= 0 ? 'Gets Back' : 'Owes',
+                                    style: const TextStyle(
+                                        color: textMuted, fontSize: 11.5)),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '\$${netBalance.abs().toStringAsFixed(2)}',
+                                  style: TextStyle(
+                                    color: netBalance >= 0
+                                        ? const Color(0xFF00E676)
+                                        : Colors.orangeAccent,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  netBalance >= 0 ? 'Credit' : 'To settle',
+                                  style: const TextStyle(
+                                      color: Colors.white38, fontSize: 10.5),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (adminActionSection != null) ...[
+                  const SizedBox(height: 14),
+                  adminActionSection,
+                ],
+              ],
+            ),
+          );
+        },
+        ),
+      ),
+    ),
+  );
+}
+
 // =========================================================================
-// GROUP CHAT & FINANCIAL DASHBOARD SCREEN (SYSTEM THEMED)
+// GROUP CHAT & SIMPLIFIED BUDGET / EXPENSES SCREEN
 // =========================================================================
 
 class WhatsAppGroupDetailScreen extends StatefulWidget {
@@ -937,7 +1392,8 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
   final TextEditingController _msgController = TextEditingController();
   final TextEditingController _expenseTitleController = TextEditingController();
   final TextEditingController _expenseAmountController =
-  TextEditingController();
+  TextEditingController(text: '00.00');
+  final TextEditingController _expenseNoteController = TextEditingController();
 
   final Map<String, Future<_MemberProfile>> _profileFutures = {};
   int _lastSeenMessageCount = -1;
@@ -968,6 +1424,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
     _msgController.dispose();
     _expenseTitleController.dispose();
     _expenseAmountController.dispose();
+    _expenseNoteController.dispose();
     super.dispose();
   }
 
@@ -978,9 +1435,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
           widget.user.uid: FieldValue.serverTimestamp(),
         },
       }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint('Error marking group as read: $e');
-    }
+    } catch (_) {}
   }
 
   Future<void> _updateGroupLastMessage({
@@ -997,9 +1452,26 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
           widget.user.uid: FieldValue.serverTimestamp(),
         },
       }, SetOptions(merge: true));
-    } catch (e) {
-      debugPrint('Error updating lastMessage metadata: $e');
-    }
+    } catch (_) {}
+  }
+
+  Future<void> _postFinancialSystemLog(String summaryText) async {
+    final displayName = await _getCurrentUserDisplayName();
+    await _db
+        .collection('groups')
+        .doc(widget.groupId)
+        .collection('messages')
+        .add({
+      'text': summaryText,
+      'senderName': displayName,
+      'senderId': widget.user.uid,
+      'isSystem': true,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+    await _updateGroupLastMessage(
+      text: summaryText,
+      senderName: displayName,
+    );
   }
 
   Uint8List? _decodeBase64Safe(String? rawBase64) {
@@ -1009,8 +1481,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
           ? rawBase64.split(',').last.trim()
           : rawBase64.trim();
       return base64Decode(cleanBase64);
-    } catch (e) {
-      debugPrint('Error decoding base64 image: $e');
+    } catch (_) {
       return null;
     }
   }
@@ -1026,6 +1497,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
   Future<_MemberProfile> _fetchMemberProfileFromDb(
       {String? uid, String? emailOrFallback}) async {
     Map<String, dynamic>? userData;
+    String? resolvedUid = uid;
 
     if (uid != null && uid.isNotEmpty) {
       try {
@@ -1033,9 +1505,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
         if (doc.exists && doc.data() != null) {
           userData = doc.data();
         }
-      } catch (e) {
-        debugPrint('Error fetching user profile by uid: $e');
-      }
+      } catch (_) {}
     }
 
     if (userData == null &&
@@ -1049,15 +1519,19 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
             .get();
         if (query.docs.isNotEmpty) {
           userData = query.docs.first.data();
+          resolvedUid ??= query.docs.first.id;
         }
-      } catch (e) {
-        debugPrint('Error fetching user profile by email: $e');
-      }
+      } catch (_) {}
     }
 
     if (userData != null) {
       final String? dbName = userData['displayName'] as String?;
       final String? dbEmail = userData['email'] as String?;
+      final String? dbBio =
+      (userData['bio'] ?? userData['about'] ?? userData['status'])
+      as String?;
+      final String? dbPhone =
+      (userData['phone'] ?? userData['phoneNumber']) as String?;
       final String? dbPhoto = userData['profilePicture'] as String?;
       final String resolvedName = (dbName != null && dbName.trim().isNotEmpty)
           ? dbName.trim()
@@ -1068,8 +1542,11 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
           : 'Member'));
 
       return _MemberProfile(
+        uid: resolvedUid,
         displayName: resolvedName,
         email: dbEmail,
+        bio: dbBio,
+        phone: dbPhone,
         photoBytes: _decodeBase64Safe(dbPhoto),
       );
     }
@@ -1083,7 +1560,11 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
       fallbackName = 'Member';
     }
 
-    return _MemberProfile(displayName: fallbackName, email: emailOrFallback);
+    return _MemberProfile(
+      uid: resolvedUid,
+      displayName: fallbackName,
+      email: emailOrFallback,
+    );
   }
 
   Future<_MemberProfile> _getCachedMemberProfile(
@@ -1099,11 +1580,24 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
     );
   }
 
+  void _openMemberProfile({String? uid, String? emailOrFallback}) {
+    _showGroupMemberProfileSheet(
+      context: context,
+      db: _db,
+      groupId: widget.groupId,
+      currentUid: widget.user.uid,
+      targetUid: uid,
+      fallbackName: emailOrFallback,
+      prefetchedProfile: null,
+    );
+  }
+
   Widget _buildDbDisplayNameText({
     String? uid,
     String? emailOrFallback,
     String prefix = '',
     required TextStyle style,
+    bool tappable = false,
   }) {
     return FutureBuilder<_MemberProfile>(
       future:
@@ -1113,9 +1607,20 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
             (emailOrFallback != null && !emailOrFallback.contains('@')
                 ? emailOrFallback
                 : '...');
-        return Text(
+        final textWidget = Text(
           '$prefix$name',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: style,
+        );
+
+        if (!tappable) return textWidget;
+        return GestureDetector(
+          onTap: () => _openMemberProfile(
+            uid: snapshot.data?.uid ?? uid,
+            emailOrFallback: emailOrFallback,
+          ),
+          child: textWidget,
         );
       },
     );
@@ -1141,15 +1646,13 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
             ? profile.displayName[0].toUpperCase()
             : fallbackInitial;
 
-        if (photoBytes != null) {
-          return CircleAvatar(
-            radius: radius,
-            backgroundColor: appAccent.withOpacity(0.25),
-            backgroundImage: MemoryImage(photoBytes),
-          );
-        }
-
-        return CircleAvatar(
+        final avatar = photoBytes != null
+            ? CircleAvatar(
+          radius: radius,
+          backgroundColor: appAccent.withOpacity(0.25),
+          backgroundImage: MemoryImage(photoBytes),
+        )
+            : CircleAvatar(
           radius: radius,
           backgroundColor: appAccent.withOpacity(0.25),
           child: Text(
@@ -1161,11 +1664,33 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
             ),
           ),
         );
+
+        return GestureDetector(
+          onTap: () => _openMemberProfile(
+            uid: profile?.uid ?? uid,
+            emailOrFallback: emailOrFallback,
+          ),
+          child: avatar,
+        );
       },
     );
   }
 
-  void _showAddExpenseModal() {
+  // =========================================================================
+  // SIMPLIFIED BUDGET & INCOME MODAL (STRICT 00.00 NUMERIC INPUT)
+  // =========================================================================
+
+  void _showAdjustBudgetAndIncomeModal({
+    required double currentBudget,
+    required double currentIncome,
+  }) {
+    final budgetController = TextEditingController(
+      text: _Currency00Dot00Formatter.formatFromDouble(currentBudget),
+    );
+    final incomeController = TextEditingController(
+      text: _Currency00Dot00Formatter.formatFromDouble(currentIncome),
+    );
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1173,124 +1698,600 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (context) => Padding(
+      builder: (sheetContext) => Padding(
         padding: EdgeInsets.only(
           left: 20,
           right: 20,
-          top: 24,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+          top: 22,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Add Group Expense',
-              style: TextStyle(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Set Budget & Income',
+                style: TextStyle(
                   color: textPrimary,
                   fontSize: 18,
-                  fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _expenseTitleController,
-              style: const TextStyle(color: textPrimary),
-              decoration: InputDecoration(
-                labelText: 'Expense Description',
-                labelStyle: const TextStyle(color: textMuted),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Colors.white24),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: appAccent, width: 2),
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _expenseAmountController,
-              keyboardType:
-              const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: textPrimary),
-              decoration: InputDecoration(
-                labelText: 'Total Amount (\$)',
-                labelStyle: const TextStyle(color: textMuted),
-                prefixText: '\$ ',
-                prefixStyle: const TextStyle(
-                    color: textPrimary, fontWeight: FontWeight.bold),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Colors.white24),
+              const SizedBox(height: 4),
+              const Text(
+                'Enter numbers only (format: 00.00)',
+                style: TextStyle(color: textMuted, fontSize: 12.5),
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: budgetController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [_Currency00Dot00Formatter()],
+                style: const TextStyle(
+                  color: textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
                 ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: appAccent, width: 2),
+                decoration: InputDecoration(
+                  labelText: 'Spending Budget (\$)',
+                  labelStyle: const TextStyle(color: textMuted, fontSize: 14),
+                  prefixText: '\$ ',
+                  prefixStyle: const TextStyle(
+                      color: textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.white24),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: appAccent, width: 2),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: appAccent,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+              const SizedBox(height: 14),
+              TextField(
+                controller: incomeController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [_Currency00Dot00Formatter()],
+                style: const TextStyle(
+                  color: Color(0xFF00E676),
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
                 ),
-                onPressed: () async {
-                  final title = _expenseTitleController.text.trim();
-                  final amount =
-                      double.tryParse(_expenseAmountController.text) ?? 0.0;
-                  if (title.isEmpty || amount <= 0) return;
+                decoration: InputDecoration(
+                  labelText: 'Group Income / Pool (\$)',
+                  labelStyle: const TextStyle(color: textMuted, fontSize: 14),
+                  prefixText: '\$ ',
+                  prefixStyle: const TextStyle(
+                      color: Color(0xFF00E676),
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.white24),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                        color: Color(0xFF00C897), width: 2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: appAccent,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: () async {
+                    final double newBudget =
+                    _Currency00Dot00Formatter.parseToDouble(
+                        budgetController.text);
+                    final double newIncome =
+                    _Currency00Dot00Formatter.parseToDouble(
+                        incomeController.text);
 
-                  final String displayName = await _getCurrentUserDisplayName();
-                  final String systemSummary =
-                      '💵 $displayName added shared expense: "$title" for \$${amount.toStringAsFixed(2)}';
+                    await _db.collection('groups').doc(widget.groupId).set({
+                      'budget': newBudget,
+                      'income': newIncome,
+                    }, SetOptions(merge: true));
 
-                  await _db
-                      .collection('groups')
-                      .doc(widget.groupId)
-                      .collection('expenses')
-                      .add({
-                    'title': title,
-                    'amount': amount,
-                    'paidBy': displayName,
-                    'paidById': widget.user.uid,
-                    'timestamp': FieldValue.serverTimestamp(),
-                  });
+                    final displayName = await _getCurrentUserDisplayName();
+                    final List<String> changes = [];
+                    if ((newBudget - currentBudget).abs() > 0.009) {
+                      changes.add(
+                          'budget to \$${newBudget.toStringAsFixed(2)}');
+                    }
+                    if ((newIncome - currentIncome).abs() > 0.009) {
+                      changes.add(
+                          'income to \$${newIncome.toStringAsFixed(2)}');
+                    }
 
-                  await _db
-                      .collection('groups')
-                      .doc(widget.groupId)
-                      .collection('messages')
-                      .add({
-                    'text': systemSummary,
-                    'senderName': displayName,
-                    'senderId': widget.user.uid,
-                    'isSystem': true,
-                    'timestamp': FieldValue.serverTimestamp(),
-                  });
+                    if (changes.isNotEmpty) {
+                      await _postFinancialSystemLog(
+                        '💰 $displayName updated ${changes.join(' & ')}',
+                      );
+                    }
 
-                  await _updateGroupLastMessage(
-                    text: systemSummary,
-                    senderName: displayName,
-                  );
-
-                  _expenseTitleController.clear();
-                  _expenseAmountController.clear();
-                  if (mounted) Navigator.pop(context);
-                },
-                child: const Text('Share Expense',
+                    if (mounted) Navigator.pop(sheetContext);
+                  },
+                  child: const Text(
+                    'Save',
                     style: TextStyle(
-                        color: textPrimary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16)),
+                      color: textPrimary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // =========================================================================
+  // ADD EXPENSE MODAL (STRICT 00.00 NUMERIC INPUT)
+  // =========================================================================
+
+  void _showAddExpenseModal() {
+    String selectedCategory = _kGroupExpenseCategories.first.name;
+    _expenseAmountController.text = '00.00';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: appHeader,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 24,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Add Expense',
+                  style: TextStyle(
+                      color: textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _expenseTitleController,
+                  style: const TextStyle(color: textPrimary),
+                  decoration: InputDecoration(
+                    labelText: 'What was it for?',
+                    hintText: 'e.g. Dinner, Groceries, Grab',
+                    hintStyle: const TextStyle(color: Colors.white24),
+                    labelStyle: const TextStyle(color: textMuted),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: appAccent, width: 2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _expenseAmountController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [_Currency00Dot00Formatter()],
+                  style: const TextStyle(
+                    color: textPrimary,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Amount (\$)',
+                    labelStyle: const TextStyle(color: textMuted, fontSize: 14),
+                    prefixText: '\$ ',
+                    prefixStyle: const TextStyle(
+                        color: textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: appAccent, width: 2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Category',
+                  style: TextStyle(
+                      color: textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _kGroupExpenseCategories.map((cat) {
+                    final bool isSelected = selectedCategory == cat.name;
+                    return ChoiceChip(
+                      selected: isSelected,
+                      backgroundColor: appCard,
+                      selectedColor: cat.color.withOpacity(0.28),
+                      side: BorderSide(
+                        color: isSelected ? cat.color : Colors.white12,
+                      ),
+                      avatar: Icon(cat.icon, size: 16, color: cat.color),
+                      label: Text(
+                        cat.name,
+                        style: TextStyle(
+                          color: isSelected ? textPrimary : textMuted,
+                          fontSize: 12,
+                          fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      onSelected: (_) {
+                        setModalState(() => selectedCategory = cat.name);
+                      },
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _expenseNoteController,
+                  maxLines: 2,
+                  style: const TextStyle(color: textPrimary, fontSize: 13.5),
+                  decoration: InputDecoration(
+                    labelText: 'Note (Optional)',
+                    hintText: 'Add a short note...',
+                    hintStyle: const TextStyle(color: Colors.white24),
+                    labelStyle: const TextStyle(color: textMuted),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: appAccent, width: 2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: appAccent,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () async {
+                      final title = _expenseTitleController.text.trim();
+                      final amount = _Currency00Dot00Formatter.parseToDouble(
+                          _expenseAmountController.text);
+                      final note = _expenseNoteController.text.trim();
+                      if (title.isEmpty || amount <= 0) return;
+
+                      final String displayName =
+                      await _getCurrentUserDisplayName();
+                      final String systemSummary =
+                          '💵 $displayName added shared expense: "$title" (\$${amount.toStringAsFixed(2)} • $selectedCategory)';
+
+                      await _db
+                          .collection('groups')
+                          .doc(widget.groupId)
+                          .collection('expenses')
+                          .add({
+                        'title': title,
+                        'amount': amount,
+                        'category': selectedCategory,
+                        'note': note,
+                        'paidBy': displayName,
+                        'paidById': widget.user.uid,
+                        'timestamp': FieldValue.serverTimestamp(),
+                      });
+
+                      await _db
+                          .collection('groups')
+                          .doc(widget.groupId)
+                          .collection('messages')
+                          .add({
+                        'text': systemSummary,
+                        'senderName': displayName,
+                        'senderId': widget.user.uid,
+                        'isSystem': true,
+                        'timestamp': FieldValue.serverTimestamp(),
+                      });
+
+                      await _updateGroupLastMessage(
+                        text: systemSummary,
+                        senderName: displayName,
+                      );
+
+                      _expenseTitleController.clear();
+                      _expenseAmountController.text = '00.00';
+                      _expenseNoteController.clear();
+                      if (mounted) Navigator.pop(sheetContext);
+                    },
+                    child: const Text('Save Expense',
+                        style: TextStyle(
+                            color: textPrimary,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16)),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // =========================================================================
+  // EXPENSE DETAIL BOTTOM SHEET
+  // =========================================================================
+
+  void _showExpenseDetailSheet({
+    required String expenseId,
+    required Map<String, dynamic> expenseData,
+    required List<String> members,
+    required bool isCurrentUserAdmin,
+  }) {
+    final String title = (expenseData['title'] as String?) ?? 'Expense';
+    final double amount = (expenseData['amount'] as num?)?.toDouble() ?? 0.0;
+    final String categoryName =
+        (expenseData['category'] as String?) ?? 'General';
+    final String note = (expenseData['note'] as String?) ?? '';
+    final String? paidById = expenseData['paidById'] as String?;
+    final String? paidByRaw = expenseData['paidBy'] as String?;
+    final Timestamp? ts = expenseData['timestamp'] as Timestamp?;
+    final String formattedDate = ts != null
+        ? DateFormat('MMM dd, yyyy • hh:mm a').format(ts.toDate())
+        : 'Recorded recently';
+
+    final catMeta = _getCategoryMeta(categoryName);
+    final int splitCount = members.isNotEmpty ? members.length : 1;
+    final double perPersonShare = amount / splitCount;
+    final bool canDelete =
+        isCurrentUserAdmin || (paidById != null && paidById == widget.user.uid);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: appHeader,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 18),
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: catMeta.color.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Icon(catMeta.icon, color: catMeta.color, size: 28),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            catMeta.name,
+                            style: TextStyle(
+                              color: catMeta.color,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: textPrimary,
+                              fontSize: 19,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      '\$${amount.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: appCard,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Paid By',
+                              style:
+                              TextStyle(color: textMuted, fontSize: 13)),
+                          InkWell(
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              _openMemberProfile(
+                                uid: paidById,
+                                emailOrFallback: paidByRaw,
+                              );
+                            },
+                            child: Row(
+                              children: [
+                                _buildUserChatAvatar(
+                                  uid: paidById,
+                                  emailOrFallback: paidByRaw,
+                                  radius: 13,
+                                ),
+                                const SizedBox(width: 8),
+                                _buildDbDisplayNameText(
+                                  uid: paidById,
+                                  emailOrFallback: paidByRaw,
+                                  style: const TextStyle(
+                                    color: Colors.cyanAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Divider(color: Colors.white10, height: 22),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Date',
+                              style:
+                              TextStyle(color: textMuted, fontSize: 13)),
+                          Text(
+                            formattedDate,
+                            style: const TextStyle(
+                                color: textPrimary, fontSize: 12.5),
+                          ),
+                        ],
+                      ),
+                      const Divider(color: Colors.white10, height: 22),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Split ($splitCount ${splitCount == 1 ? 'person' : 'people'})',
+                            style:
+                            const TextStyle(color: textMuted, fontSize: 13),
+                          ),
+                          Text(
+                            '\$${perPersonShare.toStringAsFixed(2)} each',
+                            style: const TextStyle(
+                              color: Color(0xFF00E676),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (note.trim().isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: appCard,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Text(
+                      note,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13.5,
+                      ),
+                    ),
+                  ),
+                ],
+                if (canDelete) ...[
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(
+                            color: Colors.redAccent.withOpacity(0.5)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      onPressed: () async {
+                        Navigator.pop(sheetContext);
+                        await _db
+                            .collection('groups')
+                            .doc(widget.groupId)
+                            .collection('expenses')
+                            .doc(expenseId)
+                            .delete();
+                        final actor = await _getCurrentUserDisplayName();
+                        await _postFinancialSystemLog(
+                          '🗑️ $actor removed expense "$title" (\$${amount.toStringAsFixed(2)})',
+                        );
+                      },
+                      icon: const Icon(Icons.delete_outline,
+                          color: Colors.redAccent, size: 20),
+                      label: const Text(
+                        'Delete Expense',
+                        style: TextStyle(
+                          color: Colors.redAccent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1382,7 +2383,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                           Text(
                             members.isNotEmpty
                                 ? '${members.length} ${members.length == 1 ? 'member' : 'members'} • Tap for group info'
-                                : 'Tap here for group info',
+                                : 'Tap for group info',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style:
@@ -1413,7 +2414,9 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
+          // ===============================================================
           // TAB 1: GROUP CHAT INTERFACE
+          // ===============================================================
           Column(
             children: [
               Expanded(
@@ -1441,9 +2444,9 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                     if (messages.isEmpty) {
                       return const Center(
                         child: Text(
-                          '🔒 Messages and shared expenses are synced live.\nStart the conversation below!',
+                          'No messages yet.\nSay hi or add a shared expense!',
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: textMuted, fontSize: 12),
+                          style: TextStyle(color: textMuted, fontSize: 13),
                         ),
                       );
                     }
@@ -1592,6 +2595,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                                           child: _buildDbDisplayNameText(
                                             uid: senderId,
                                             emailOrFallback: fallbackSender,
+                                            tappable: true,
                                             style: const TextStyle(
                                               color: Colors.cyanAccent,
                                               fontSize: 11.5,
@@ -1634,15 +2638,12 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                         ),
                         child: Row(
                           children: [
-                            const Icon(Icons.emoji_emotions_outlined,
-                                color: textMuted),
-                            const SizedBox(width: 8),
                             Expanded(
                               child: TextField(
                                 controller: _msgController,
                                 style: const TextStyle(color: textPrimary),
                                 decoration: const InputDecoration(
-                                  hintText: 'Message',
+                                  hintText: 'Type a message...',
                                   hintStyle: TextStyle(color: textMuted),
                                   border: InputBorder.none,
                                 ),
@@ -1651,8 +2652,9 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                             IconButton(
                               constraints: const BoxConstraints(),
                               padding: EdgeInsets.zero,
-                              icon: const Icon(Icons.attach_file,
-                                  color: textMuted),
+                              tooltip: 'Add Expense',
+                              icon: const Icon(Icons.add_card_outlined,
+                                  color: Colors.cyanAccent),
                               onPressed: _showAddExpenseModal,
                             ),
                           ],
@@ -1699,7 +2701,9 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
             ],
           ),
 
-          // TAB 2: FINANCIAL SUMMARY & GROUP TRANSACTION HISTORY
+          // ===============================================================
+          // TAB 2: CLEAN & EASY-TO-UNDERSTAND BUDGET & EXPENSES TAB
+          // ===============================================================
           StreamBuilder<DocumentSnapshot>(
             stream: _db.collection('groups').doc(widget.groupId).snapshots(),
             builder: (context, groupSnapshot) {
@@ -1712,6 +2716,18 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                   groupSnapshot.data!.data() as Map<String, dynamic>? ?? {};
               final double groupBudget =
                   (groupData['budget'] as num?)?.toDouble() ?? 0.0;
+              final double groupIncome =
+                  (groupData['income'] as num?)?.toDouble() ?? 0.0;
+              final List<String> members =
+              ((groupData['members'] as List?) ?? [])
+                  .map((e) => e.toString())
+                  .toList();
+              final List<String> admins =
+              ((groupData['admins'] as List?) ?? [])
+                  .map((e) => e.toString())
+                  .toList();
+              final bool isCurrentUserAdmin = admins.contains(widget.user.uid) ||
+                  groupData['createdBy'] == widget.user.uid;
 
               return StreamBuilder<QuerySnapshot>(
                 stream: _db
@@ -1729,23 +2745,39 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                   final expenses = expenseSnapshot.data!.docs;
 
                   double totalSpent = 0.0;
+                  final Map<String, double> paidByMember = {
+                    for (final m in members) m: 0.0,
+                  };
+
                   for (var doc in expenses) {
                     final data = doc.data() as Map<String, dynamic>;
-                    totalSpent += (data['amount'] as num?)?.toDouble() ?? 0.0;
+                    final double amt =
+                        (data['amount'] as num?)?.toDouble() ?? 0.0;
+                    totalSpent += amt;
+                    final String? payer = data['paidById'] as String?;
+                    if (payer != null) {
+                      paidByMember[payer] = (paidByMember[payer] ?? 0.0) + amt;
+                    }
                   }
 
-                  final double remainingBudget = groupBudget - totalSpent;
-                  final double progress = groupBudget > 0
-                      ? (totalSpent / groupBudget).clamp(0.0, 1.0)
+                  final double effectiveLimit =
+                  groupBudget > 0 ? groupBudget : groupIncome;
+                  final double remaining = effectiveLimit - totalSpent;
+                  final double progress = effectiveLimit > 0
+                      ? (totalSpent / effectiveLimit).clamp(0.0, 1.0)
                       : 0.0;
-                  final bool isOverBudget =
-                      groupBudget > 0 && totalSpent > groupBudget;
+                  final bool isOverLimit =
+                      effectiveLimit > 0 && totalSpent > effectiveLimit;
+                  final double fairShare = members.isNotEmpty
+                      ? totalSpent / members.length
+                      : totalSpent;
 
-                  return Padding(
+                  return SingleChildScrollView(
                     padding: const EdgeInsets.all(16.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // --- 1. SIMPLE BALANCE OVERVIEW CARD ---
                         Container(
                           padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
@@ -1760,133 +2792,323 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                                 mainAxisAlignment:
                                 MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Column(
-                                    crossAxisAlignment:
-                                    CrossAxisAlignment.start,
-                                    children: [
-                                      const Text('Group Budget',
-                                          style: TextStyle(
-                                              color: textMuted, fontSize: 12)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '\$${groupBudget.toStringAsFixed(2)}',
-                                        style: const TextStyle(
-                                            color: textPrimary,
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold),
-                                      ),
-                                    ],
-                                  ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      const Text('Total Spent',
-                                          style: TextStyle(
-                                              color: textMuted, fontSize: 12)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '\$${totalSpent.toStringAsFixed(2)}',
-                                        style: TextStyle(
-                                          color: isOverBudget
-                                              ? Colors.redAccent
-                                              : Colors.greenAccent,
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 14),
-                              Row(
-                                mainAxisAlignment:
-                                MainAxisAlignment.spaceBetween,
-                                children: [
                                   Text(
-                                    isOverBudget
-                                        ? 'Over Budget'
-                                        : 'Remaining Budget',
+                                    isOverLimit
+                                        ? 'Over Budget By'
+                                        : 'Remaining Balance',
                                     style: const TextStyle(
-                                        color: textMuted, fontSize: 12),
-                                  ),
-                                  Text(
-                                    '\$${remainingBudget.abs().toStringAsFixed(2)}',
-                                    style: TextStyle(
-                                      color: isOverBudget
-                                          ? Colors.redAccent
-                                          : Colors.white,
-                                      fontWeight: FontWeight.bold,
+                                      color: textMuted,
                                       fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  InkWell(
+                                    onTap: () =>
+                                        _showAdjustBudgetAndIncomeModal(
+                                          currentBudget: groupBudget,
+                                          currentIncome: groupIncome,
+                                        ),
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 10, vertical: 5),
+                                      decoration: BoxDecoration(
+                                        color: appAccent.withOpacity(0.18),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: const Row(
+                                        children: [
+                                          Icon(Icons.edit_outlined,
+                                              color: Colors.cyanAccent,
+                                              size: 14),
+                                          SizedBox(width: 4),
+                                          Text(
+                                            'Edit Budget',
+                                            style: TextStyle(
+                                              color: Colors.cyanAccent,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 6),
+                              Text(
+                                '\$${remaining.abs().toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  color: isOverLimit
+                                      ? Colors.redAccent
+                                      : textPrimary,
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
                               ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
+                                borderRadius: BorderRadius.circular(6),
                                 child: LinearProgressIndicator(
                                   value: progress,
-                                  minHeight: 6,
+                                  minHeight: 8,
                                   backgroundColor: Colors.white10,
                                   valueColor: AlwaysStoppedAnimation<Color>(
-                                    isOverBudget ? Colors.redAccent : appAccent,
+                                    isOverLimit
+                                        ? Colors.redAccent
+                                        : const Color(0xFF00C897),
                                   ),
                                 ),
+                              ),
+                              const Divider(color: Colors.white10, height: 26),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                      children: [
+                                        const Text('Budget',
+                                            style: TextStyle(
+                                                color: textMuted,
+                                                fontSize: 12)),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          '\$${groupBudget.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            color: textPrimary,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.center,
+                                      children: [
+                                        const Text('Income',
+                                            style: TextStyle(
+                                                color: textMuted,
+                                                fontSize: 12)),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          '\$${groupIncome.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            color: Color(0xFF00E676),
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.end,
+                                      children: [
+                                        const Text('Spent',
+                                            style: TextStyle(
+                                                color: textMuted,
+                                                fontSize: 12)),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          '\$${totalSpent.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            color: Colors.orangeAccent,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
                         ),
 
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 14),
 
+                        // --- 2. SINGLE CLEAR ADD EXPENSE BUTTON ---
                         SizedBox(
                           width: double.infinity,
+                          height: 50,
                           child: ElevatedButton.icon(
                             style: ElevatedButton.styleFrom(
                               backgroundColor: appAccent,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
                               shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14)),
                             ),
                             onPressed: _showAddExpenseModal,
-                            icon: const Icon(Icons.add, color: textPrimary),
-                            label: const Text('Add Shared Expense',
-                                style: TextStyle(
-                                    color: textPrimary,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 15)),
+                            icon: const Icon(Icons.add_circle_outline,
+                                color: textPrimary),
+                            label: const Text(
+                              'Add Group Expense',
+                              style: TextStyle(
+                                color: textPrimary,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                           ),
                         ),
 
-                        const SizedBox(height: 20),
+                        // --- 3. EASY-TO-READ MEMBER SPLIT ---
+                        if (members.isNotEmpty) ...[
+                          const SizedBox(height: 22),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Member Balances',
+                                style: TextStyle(
+                                  color: textPrimary,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                'Share: \$${fairShare.toStringAsFixed(2)} each',
+                                style: const TextStyle(
+                                    color: textMuted, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            height: 106,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: members.length,
+                              separatorBuilder: (_, __) =>
+                              const SizedBox(width: 10),
+                              itemBuilder: (context, idx) {
+                                final mUid = members[idx];
+                                final paid = paidByMember[mUid] ?? 0.0;
+                                final net = paid - fairShare;
 
-                        const Text(
-                          'Group Transactions',
-                          style: TextStyle(
+                                final String statusLabel;
+                                final Color statusColor;
+                                if (net > 0.009) {
+                                  statusLabel =
+                                  'Gets back \$${net.toStringAsFixed(2)}';
+                                  statusColor = const Color(0xFF00E676);
+                                } else if (net < -0.009) {
+                                  statusLabel =
+                                  'Owes \$${net.abs().toStringAsFixed(2)}';
+                                  statusColor = Colors.orangeAccent;
+                                } else {
+                                  statusLabel = 'Settled up';
+                                  statusColor = Colors.cyanAccent;
+                                }
+
+                                return InkWell(
+                                  onTap: () => _openMemberProfile(uid: mUid),
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Container(
+                                    width: 148,
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: appCard,
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(color: Colors.white10),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                      mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            _buildUserChatAvatar(
+                                                uid: mUid, radius: 13),
+                                            const SizedBox(width: 7),
+                                            Expanded(
+                                              child: _buildDbDisplayNameText(
+                                                uid: mUid,
+                                                style: const TextStyle(
+                                                  color: textPrimary,
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        Text(
+                                          'Paid \$${paid.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            color: textMuted,
+                                            fontSize: 11.5,
+                                          ),
+                                        ),
+                                        Text(
+                                          statusLabel,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: statusColor,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+
+                        // --- 4. CLEAN EXPENSE LIST ---
+                        const SizedBox(height: 22),
+                        Text(
+                          'Expenses (${expenses.length})',
+                          style: const TextStyle(
                               color: textPrimary,
                               fontSize: 16,
                               fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 10),
 
-                        Expanded(
-                          child: expenses.isEmpty
-                              ? const Center(
-                            child: Text(
-                                'No group expenses recorded yet.',
-                                style: TextStyle(color: textMuted)),
+                        if (expenses.isEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(vertical: 32),
+                            decoration: BoxDecoration(
+                              color: appCard.withOpacity(0.5),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Center(
+                              child: Text(
+                                'No expenses yet. Tap "Add Group Expense" above.',
+                                style: TextStyle(color: textMuted, fontSize: 13),
+                              ),
+                            ),
                           )
-                              : ListView.builder(
+                        else
+                          ListView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
                             itemCount: expenses.length,
                             itemBuilder: (context, index) {
-                              final data = expenses[index].data()
-                              as Map<String, dynamic>;
-                              final String title =
-                                  data['title'] ?? 'Expense';
+                              final expDoc = expenses[index];
+                              final data =
+                              expDoc.data() as Map<String, dynamic>;
+                              final String title = data['title'] ?? 'Expense';
                               final double amount =
-                                  (data['amount'] as num?)?.toDouble() ??
-                                      0.0;
+                                  (data['amount'] as num?)?.toDouble() ?? 0.0;
+                              final String categoryName =
+                                  (data['category'] as String?) ?? 'General';
+                              final catMeta = _getCategoryMeta(categoryName);
                               final String? paidById =
                               data['paidById'] as String?;
                               final String? paidByRaw =
@@ -1894,85 +3116,95 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
                               final Timestamp? ts =
                               data['timestamp'] as Timestamp?;
                               final String formattedDate = ts != null
-                                  ? DateFormat('MMM dd, yyyy • hh:mm a')
-                                  .format(ts.toDate())
-                                  : 'Just now';
+                                  ? DateFormat('MMM dd').format(ts.toDate())
+                                  : 'Today';
 
-                              return Container(
-                                margin: const EdgeInsets.only(bottom: 12),
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: appCard,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border:
-                                  Border.all(color: Colors.white10),
+                              return InkWell(
+                                onTap: () => _showExpenseDetailSheet(
+                                  expenseId: expDoc.id,
+                                  expenseData: data,
+                                  members: members,
+                                  isCurrentUserAdmin: isCurrentUserAdmin,
                                 ),
-                                child: Row(
-                                  mainAxisAlignment:
-                                  MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Container(
-                                          padding:
-                                          const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
-                                            color: Colors.redAccent
-                                                .withOpacity(0.15),
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Icon(
-                                            Icons.shopping_bag_outlined,
-                                            color: Colors.redAccent,
-                                            size: 20,
-                                          ),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.all(14),
+                                  decoration: BoxDecoration(
+                                    color: appCard,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: Colors.white10),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(10),
+                                        decoration: BoxDecoration(
+                                          color:
+                                          catMeta.color.withOpacity(0.16),
+                                          borderRadius:
+                                          BorderRadius.circular(12),
                                         ),
-                                        const SizedBox(width: 12),
-                                        Column(
+                                        child: Icon(
+                                          catMeta.icon,
+                                          color: catMeta.color,
+                                          size: 20,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
                                           crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                           children: [
                                             Text(
                                               title,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
                                               style: const TextStyle(
                                                   color: textPrimary,
-                                                  fontWeight:
-                                                  FontWeight.bold,
+                                                  fontWeight: FontWeight.bold,
                                                   fontSize: 15),
                                             ),
-                                            const SizedBox(height: 4),
-                                            _buildDbDisplayNameText(
-                                              uid: paidById,
-                                              emailOrFallback: paidByRaw,
-                                              prefix: 'Paid by: ',
-                                              style: const TextStyle(
-                                                  color: textMuted,
-                                                  fontSize: 12),
-                                            ),
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              formattedDate,
-                                              style: const TextStyle(
-                                                  color: Colors.white38,
-                                                  fontSize: 10),
+                                            const SizedBox(height: 3),
+                                            Row(
+                                              children: [
+                                                Flexible(
+                                                  child:
+                                                  _buildDbDisplayNameText(
+                                                    uid: paidById,
+                                                    emailOrFallback: paidByRaw,
+                                                    prefix: 'Paid by ',
+                                                    style: const TextStyle(
+                                                        color: textMuted,
+                                                        fontSize: 12),
+                                                  ),
+                                                ),
+                                                Text(
+                                                  ' • $formattedDate',
+                                                  style: const TextStyle(
+                                                      color: Colors.white38,
+                                                      fontSize: 12),
+                                                ),
+                                              ],
                                             ),
                                           ],
                                         ),
-                                      ],
-                                    ),
-                                    Text(
-                                      '-\$${amount.toStringAsFixed(2)}',
-                                      style: const TextStyle(
-                                          color: Colors.redAccent,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16),
-                                    ),
-                                  ],
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '\$${amount.toStringAsFixed(2)}',
+                                        style: const TextStyle(
+                                            color: textPrimary,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               );
                             },
                           ),
-                        ),
                       ],
                     ),
                   );
@@ -1987,7 +3219,7 @@ class _WhatsAppGroupDetailScreenState extends State<WhatsAppGroupDetailScreen>
 }
 
 // =========================================================================
-// WHATSAPP-STYLE GROUP INFO / DETAIL SCREEN (ADMIN CONTROLS + ICON PICKER)
+// GROUP INFO SCREEN (STRICT 00.00 NUMERIC INPUT FOR BUDGET & INCOME)
 // =========================================================================
 
 class WhatsAppGroupInfoScreen extends StatefulWidget {
@@ -2042,6 +3274,10 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
         final data = doc.data()!;
         final String? dbName = data['displayName'] as String?;
         final String? dbEmail = data['email'] as String?;
+        final String? dbBio =
+        (data['bio'] ?? data['about'] ?? data['status']) as String?;
+        final String? dbPhone =
+        (data['phone'] ?? data['phoneNumber']) as String?;
         final String? dbPhoto = data['profilePicture'] as String?;
 
         final String name = (dbName != null && dbName.trim().isNotEmpty)
@@ -2051,15 +3287,16 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
             : 'Member');
 
         return _MemberProfile(
+          uid: uid,
           displayName: name,
           email: dbEmail,
+          bio: dbBio,
+          phone: dbPhone,
           photoBytes: _decodeBase64Safe(dbPhoto),
         );
       }
-    } catch (e) {
-      debugPrint('Error fetching member $uid: $e');
-    }
-    return const _MemberProfile(displayName: 'Member');
+    } catch (_) {}
+    return _MemberProfile(uid: uid, displayName: 'Member');
   }
 
   Future<_MemberProfile> _getMemberProfile(String uid) {
@@ -2228,6 +3465,111 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
     );
   }
 
+  void _showEditBudgetAndIncomeDialog(
+      double currentBudget, double currentIncome) {
+    final budgetController = TextEditingController(
+      text: _Currency00Dot00Formatter.formatFromDouble(currentBudget),
+    );
+    final incomeController = TextEditingController(
+      text: _Currency00Dot00Formatter.formatFromDouble(currentIncome),
+    );
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: appHeader,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Edit Budget & Income',
+          style: TextStyle(color: textPrimary, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: budgetController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [_Currency00Dot00Formatter()],
+              style: const TextStyle(
+                  color: textPrimary, fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                labelText: 'Group Budget (\$)',
+                labelStyle: const TextStyle(color: textMuted),
+                prefixText: '\$ ',
+                prefixStyle: const TextStyle(color: textPrimary),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.white24),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: appAccent, width: 2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: incomeController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [_Currency00Dot00Formatter()],
+              style: const TextStyle(
+                  color: Color(0xFF00E676), fontWeight: FontWeight.bold),
+              decoration: InputDecoration(
+                labelText: 'Group Income (\$)',
+                labelStyle: const TextStyle(color: textMuted),
+                prefixText: '\$ ',
+                prefixStyle: const TextStyle(color: Color(0xFF00E676)),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.white24),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide:
+                  const BorderSide(color: Color(0xFF00C897), width: 2),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel', style: TextStyle(color: textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: appAccent,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () async {
+              final newBudget = _Currency00Dot00Formatter.parseToDouble(
+                  budgetController.text);
+              final newIncome = _Currency00Dot00Formatter.parseToDouble(
+                  incomeController.text);
+
+              await _db.collection('groups').doc(widget.groupId).set({
+                'budget': newBudget,
+                'income': newIncome,
+              }, SetOptions(merge: true));
+
+              final actorName = await _getActorDisplayName();
+              await _postSystemLog(
+                '💰 $actorName set budget to \$${newBudget.toStringAsFixed(2)} & income to \$${newIncome.toStringAsFixed(2)}',
+              );
+
+              if (mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('Save',
+                style:
+                TextStyle(color: textPrimary, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _grantAdminRole(
       String targetUid, String targetName, Set<String> currentAdmins) async {
     final updatedAdmins = {...currentAdmins, targetUid}.toList();
@@ -2310,124 +3652,86 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
     }
   }
 
-  void _showMemberActionsSheet({
+  void _openMemberProfileAndActions({
     required String targetUid,
-    required String targetName,
+    required _MemberProfile? profile,
+    required bool isMe,
     required bool targetIsAdmin,
+    required bool isCurrentUserAdmin,
     required Set<String> currentAdmins,
     required String? createdBy,
   }) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: appHeader,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 38,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              Padding(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                child: Row(
-                  children: [
-                    Text(
-                      targetName,
-                      style: const TextStyle(
-                        color: textPrimary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    if (targetIsAdmin) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF00C897).withOpacity(0.18),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                              color: const Color(0xFF00C897), width: 0.8),
-                        ),
-                        child: const Text(
-                          'Group Admin',
-                          style: TextStyle(
-                            color: Color(0xFF00C897),
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const Divider(color: Colors.white12),
-              if (!targetIsAdmin)
-                ListTile(
-                  leading: const Icon(Icons.admin_panel_settings_outlined,
-                      color: Color(0xFF00C897)),
-                  title: const Text(
-                    'Make Group Admin',
-                    style: TextStyle(
-                        color: textPrimary, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: const Text(
-                    'Allow this member to change group icon & manage admins',
-                    style: TextStyle(color: textMuted, fontSize: 12),
-                  ),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _grantAdminRole(targetUid, targetName, currentAdmins);
-                  },
-                )
-              else
-                ListTile(
-                  leading: const Icon(Icons.remove_moderator_outlined,
-                      color: Colors.orangeAccent),
-                  title: const Text(
-                    'Dismiss as Admin',
-                    style: TextStyle(
-                        color: Colors.orangeAccent,
-                        fontWeight: FontWeight.w500),
-                  ),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _dismissAdminRole(
-                        targetUid, targetName, currentAdmins, createdBy);
-                  },
-                ),
+    final String targetName = profile?.displayName ?? 'Member';
+
+    Widget? adminControls;
+    if (isCurrentUserAdmin && !isMe) {
+      adminControls = Container(
+        decoration: BoxDecoration(
+          color: appCard,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(
+          children: [
+            if (!targetIsAdmin)
               ListTile(
-                leading: const Icon(Icons.person_remove_outlined,
-                    color: Colors.redAccent),
-                title: Text(
-                  'Remove $targetName',
-                  style: const TextStyle(
-                      color: Colors.redAccent, fontWeight: FontWeight.w500),
+                leading: const Icon(Icons.admin_panel_settings_outlined,
+                    color: Color(0xFF00C897)),
+                title: const Text(
+                  'Make Group Admin',
+                  style: TextStyle(
+                      color: textPrimary, fontWeight: FontWeight.w600),
                 ),
                 onTap: () {
-                  Navigator.pop(sheetContext);
-                  _removeMemberFromGroup(
+                  Navigator.pop(context);
+                  _grantAdminRole(targetUid, targetName, currentAdmins);
+                },
+              )
+            else
+              ListTile(
+                leading: const Icon(Icons.remove_moderator_outlined,
+                    color: Colors.orangeAccent),
+                title: const Text(
+                  'Dismiss as Admin',
+                  style: TextStyle(
+                      color: Colors.orangeAccent, fontWeight: FontWeight.w600),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _dismissAdminRole(
                       targetUid, targetName, currentAdmins, createdBy);
                 },
               ),
-            ],
-          ),
+            const Divider(color: Colors.white10, height: 1),
+            ListTile(
+              leading: const Icon(Icons.person_remove_outlined,
+                  color: Colors.redAccent),
+              title: Text(
+                'Remove $targetName',
+                style: const TextStyle(
+                    color: Colors.redAccent, fontWeight: FontWeight.w600),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _removeMemberFromGroup(
+                    targetUid, targetName, currentAdmins, createdBy);
+              },
+            ),
+          ],
         ),
-      ),
+      );
+    }
+
+    _showGroupMemberProfileSheet(
+      context: context,
+      db: _db,
+      groupId: widget.groupId,
+      currentUid: widget.user.uid,
+      targetUid: targetUid,
+      fallbackName: targetName,
+      prefetchedProfile: profile,
+      isAdmin: targetIsAdmin,
+      adminActionSection: adminControls,
     );
   }
 
@@ -2506,6 +3810,7 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
             : widget.initialAvatarBase64;
         final String inviteCode = (groupData['inviteCode'] as String?) ?? '';
         final double budget = (groupData['budget'] as num?)?.toDouble() ?? 0.0;
+        final double income = (groupData['income'] as num?)?.toDouble() ?? 0.0;
         final String? createdBy = groupData['createdBy'] as String?;
 
         final List<String> members = ((groupData['members'] as List?) ?? [])
@@ -2546,7 +3851,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
           body: SingleChildScrollView(
             child: Column(
               children: [
-                // --- TOP GROUP PROFILE HEADER ---
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.fromLTRB(20, 24, 20, 26),
@@ -2573,13 +3877,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                   color: appAccent.withOpacity(0.75),
                                   width: 2.5,
                                 ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: appAccent.withOpacity(0.25),
-                                    blurRadius: 18,
-                                    spreadRadius: 2,
-                                  ),
-                                ],
                               ),
                               child: ClipOval(
                                 child: groupAvatarBytes != null
@@ -2640,20 +3937,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                           ],
                         ),
                       ),
-                      if (isCurrentUserAdmin) ...[
-                        const SizedBox(height: 8),
-                        GestureDetector(
-                          onTap: _isUpdatingIcon ? null : _changeGroupIcon,
-                          child: const Text(
-                            'Tap icon to change group photo',
-                            style: TextStyle(
-                              color: Colors.cyanAccent,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ],
                       const SizedBox(height: 14),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -2684,7 +3967,7 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Group • ${members.length} ${members.length == 1 ? 'member' : 'members'}',
+                        '${members.length} ${members.length == 1 ? 'member' : 'members'}',
                         style: const TextStyle(color: textMuted, fontSize: 13),
                       ),
                     ],
@@ -2693,7 +3976,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
 
                 const SizedBox(height: 16),
 
-                // --- INVITE CODE & BUDGET DETAILS CARD ---
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0),
                   child: Container(
@@ -2724,7 +4006,7 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     const Text(
-                                      'Group Invite Code',
+                                      'Invite Code',
                                       style: TextStyle(
                                           color: textMuted, fontSize: 12),
                                     ),
@@ -2748,56 +4030,67 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                               IconButton(
                                 icon: const Icon(Icons.copy_rounded,
                                     color: Colors.cyanAccent, size: 20),
-                                tooltip: 'Copy invite code',
                                 onPressed: () {
                                   Clipboard.setData(
                                       ClipboardData(text: inviteCode));
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
-                                        content: Text(
-                                            'Invite code copied to clipboard!')),
+                                        content: Text('Invite code copied!')),
                                   );
                                 },
                               ),
                           ],
                         ),
                         const Divider(color: Colors.white10, height: 22),
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color:
-                                const Color(0xFF00C897).withOpacity(0.18),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Icon(
-                                Icons.account_balance_wallet_outlined,
-                                color: Color(0xFF00C897),
-                                size: 18,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Group Budget',
-                                  style:
-                                  TextStyle(color: textMuted, fontSize: 12),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '\$${budget.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                    color: textPrimary,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
+                        InkWell(
+                          onTap: () =>
+                              _showEditBudgetAndIncomeDialog(budget, income),
+                          borderRadius: BorderRadius.circular(10),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF00C897)
+                                          .withOpacity(0.18),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: const Icon(
+                                      Icons.account_balance_wallet_outlined,
+                                      color: Color(0xFF00C897),
+                                      size: 18,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          ],
+                                  const SizedBox(width: 12),
+                                  Column(
+                                    crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Budget & Income',
+                                        style: TextStyle(
+                                            color: textMuted, fontSize: 12),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Budget \$${budget.toStringAsFixed(2)} • Income \$${income.toStringAsFixed(2)}',
+                                        style: const TextStyle(
+                                          color: textPrimary,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                              const Icon(Icons.edit_outlined,
+                                  color: Colors.cyanAccent, size: 18),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -2806,7 +4099,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
 
                 const SizedBox(height: 16),
 
-                // --- MEMBERS & ADMINS LIST CARD ---
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0),
                   child: Container(
@@ -2822,26 +4114,13 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                         Padding(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16.0, vertical: 4.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                '${members.length} ${members.length == 1 ? 'Participant' : 'Participants'}',
-                                style: const TextStyle(
-                                  color: textMuted,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              if (isCurrentUserAdmin)
-                                const Text(
-                                  'Tap a member to manage admin',
-                                  style: TextStyle(
-                                    color: Colors.cyanAccent,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                            ],
+                          child: Text(
+                            'Members (${members.length})',
+                            style: const TextStyle(
+                              color: textMuted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                         const Divider(color: Colors.white10, height: 16),
@@ -2874,15 +4153,15 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                     : 'M';
 
                                 return ListTile(
-                                  onTap: (isCurrentUserAdmin && !isMe)
-                                      ? () => _showMemberActionsSheet(
+                                  onTap: () => _openMemberProfileAndActions(
                                     targetUid: memberUid,
-                                    targetName: displayName,
+                                    profile: profile,
+                                    isMe: isMe,
                                     targetIsAdmin: isMemberAdmin,
+                                    isCurrentUserAdmin: isCurrentUserAdmin,
                                     currentAdmins: adminSet,
                                     createdBy: createdBy,
-                                  )
-                                      : null,
+                                  ),
                                   leading: photoBytes != null
                                       ? CircleAvatar(
                                     radius: 21,
@@ -2903,23 +4182,17 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                       ),
                                     ),
                                   ),
-                                  title: Row(
-                                    children: [
-                                      Flexible(
-                                        child: Text(
-                                          isMe
-                                              ? '$displayName (You)'
-                                              : displayName,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: textPrimary,
-                                            fontSize: 14.5,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
+                                  title: Text(
+                                    isMe
+                                        ? '$displayName (You)'
+                                        : displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: textPrimary,
+                                      fontSize: 14.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                   subtitle: email != null && email.isNotEmpty
                                       ? Text(
@@ -2953,7 +4226,7 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                             ),
                                           ),
                                           child: const Text(
-                                            'Group Admin',
+                                            'Admin',
                                             style: TextStyle(
                                               color: Color(0xFF00C897),
                                               fontSize: 11,
@@ -2961,14 +4234,12 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
                                             ),
                                           ),
                                         ),
-                                      if (isCurrentUserAdmin && !isMe) ...[
-                                        const SizedBox(width: 4),
-                                        const Icon(
-                                          Icons.more_vert,
-                                          color: textMuted,
-                                          size: 18,
-                                        ),
-                                      ],
+                                      const SizedBox(width: 4),
+                                      const Icon(
+                                        Icons.chevron_right,
+                                        color: textMuted,
+                                        size: 18,
+                                      ),
                                     ],
                                   ),
                                 );
@@ -2983,7 +4254,6 @@ class _WhatsAppGroupInfoScreenState extends State<WhatsAppGroupInfoScreen> {
 
                 const SizedBox(height: 16),
 
-                // --- EXIT GROUP CARD ---
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0),
                   child: Container(
