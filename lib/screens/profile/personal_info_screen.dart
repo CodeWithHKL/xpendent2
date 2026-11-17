@@ -1079,7 +1079,20 @@ class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
                               title: const Text('Appearance',
                                   style: TextStyle(color: Colors.white, fontSize: 13)),
                               trailing: const Icon(Icons.chevron_right, color: Colors.white38, size: 18),
-                              onTap: () {},
+                              onTap: () {
+                                ScaffoldMessenger.of(context)
+                                  ..hideCurrentSnackBar()
+                                  ..showSnackBar(
+                                    const SnackBar(
+                                      backgroundColor: Color(0xFF18243E),
+                                      content: Text(
+                                        'This feature is coming soon',
+                                        style: TextStyle(color: Colors.white),
+                                      ),
+                                      duration: Duration(seconds: 2),
+                                    ),
+                                  );
+                              },
                             ),
                             const Divider(color: Colors.white12, height: 1),
                             ListTile(

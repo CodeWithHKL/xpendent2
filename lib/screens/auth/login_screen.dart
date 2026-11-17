@@ -25,9 +25,17 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
-        );
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFF1E2D48),
+              content: Text(
+                'Error: ${e.toString()}',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -42,9 +50,18 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _handleForgotPassword() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Password reset feature coming soon')),
-    );
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          backgroundColor: Color(0xFF1E2D48),
+          content: Text(
+            'Password reset feature coming soon',
+            style: TextStyle(color: Colors.white),
+          ),
+          duration: Duration(seconds: 2),
+        ),
+      );
   }
 
   @override

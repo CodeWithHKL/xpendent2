@@ -107,12 +107,13 @@ class BalanceScreen extends StatelessWidget {
           stream: _firestoreService.getTransactions(user.uid),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
+              return const Center(
+                child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
+              );
             }
 
             final transactions = snapshot.data ?? [];
 
-            // Compute overall balance, income, and expenses
             double totalIncome = 0.0;
             double totalExpense = 0.0;
 
@@ -147,9 +148,9 @@ class BalanceScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // --- HOMESCREEN WALLPAPER TOP HEADER CONTAINER ---
+                        // --- TOP HEADER & BALANCE BANNER ---
                         ClipRRect(
-                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(24)),
+                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(28)),
                           child: Stack(
                             children: [
                               Positioned.fill(
@@ -160,7 +161,7 @@ class BalanceScreen extends StatelessWidget {
                                     return Container(
                                       decoration: const BoxDecoration(
                                         gradient: LinearGradient(
-                                          colors: [Color(0xFF132247), Color(0xFF0C1327)],
+                                          colors: [Color(0xFF1E2D4A), Color(0xFF0F1626)],
                                           begin: Alignment.topCenter,
                                           end: Alignment.bottomCenter,
                                         ),
@@ -170,103 +171,162 @@ class BalanceScreen extends StatelessWidget {
                                 ),
                               ),
                               Container(
-                                padding: const EdgeInsets.only(top: 10, left: 16, right: 16, bottom: 16),
-                                color: Colors.black.withOpacity(0.20),
+                                padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      Colors.black.withOpacity(0.4),
+                                      const Color(0xFF0F1626).withOpacity(0.85),
+                                    ],
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                  ),
+                                ),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    // Top Title
-                                    const Row(
+                                    // Title Row
+                                    Row(
                                       children: [
-                                        CircleAvatar(
-                                          radius: 18,
-                                          backgroundColor: Colors.white10,
-                                          child: Icon(Icons.person_outline, color: Colors.white, size: 20),
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.1),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(Icons.account_balance_wallet_outlined,
+                                              color: Colors.white, size: 20),
                                         ),
-                                        SizedBox(width: 12),
-                                        Text(
-                                          'My Budget',
+                                        const SizedBox(width: 12),
+                                        const Text(
+                                          'My Balance',
                                           style: TextStyle(
                                             color: Colors.white,
                                             fontSize: 22,
                                             fontWeight: FontWeight.bold,
+                                            letterSpacing: 0.3,
                                           ),
                                         ),
                                       ],
                                     ),
-                                    const SizedBox(height: 14),
+                                    const SizedBox(height: 16),
 
-                                    // Current Balance Box
+                                    // Balance Card
                                     Container(
                                       width: double.infinity,
-                                      padding: const EdgeInsets.all(16),
+                                      padding: const EdgeInsets.all(18),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF1E2D4A).withOpacity(0.85),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(color: Colors.white.withOpacity(0.15)),
+                                        color: const Color(0xFF18243E).withOpacity(0.92),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(color: Colors.white.withOpacity(0.12)),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withOpacity(0.25),
+                                            blurRadius: 15,
+                                            offset: const Offset(0, 6),
+                                          ),
+                                        ],
                                       ),
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           const Text(
-                                            'Current Balance',
-                                            style: TextStyle(color: Colors.white70, fontSize: 13),
+                                            'Total Balance',
+                                            style: TextStyle(
+                                              color: Colors.white60,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w500,
+                                            ),
                                           ),
                                           const SizedBox(height: 6),
                                           Text(
-                                            '${netBalance >= 0 ? '' : '-'}$currencyCode${netBalance.abs().toStringAsFixed(2)}',
+                                            '${netBalance >= 0 ? '' : '-'}$currencyCode ${netBalance.abs().toStringAsFixed(2)}',
                                             style: const TextStyle(
                                               color: Colors.white,
-                                              fontSize: 30,
+                                              fontSize: 32,
                                               fontWeight: FontWeight.bold,
+                                              letterSpacing: -0.5,
                                             ),
                                           ),
-                                          const SizedBox(height: 12),
+                                          const Padding(
+                                            padding: EdgeInsets.symmetric(vertical: 14),
+                                            child: Divider(color: Colors.white12, height: 1),
+                                          ),
                                           Row(
                                             children: [
-                                              // Income summary indicator
-                                              Row(
-                                                children: [
-                                                  const Icon(Icons.north_east, color: Colors.greenAccent, size: 14),
-                                                  const SizedBox(width: 4),
-                                                  Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                    children: [
-                                                      const Text('Income',
-                                                          style: TextStyle(color: Colors.greenAccent, fontSize: 11)),
-                                                      Text(
-                                                        '$currencyCode${totalIncome.toStringAsFixed(2)}',
-                                                        style: const TextStyle(
-                                                            color: Colors.white,
-                                                            fontSize: 13,
-                                                            fontWeight: FontWeight.bold),
+                                              // Income
+                                              Expanded(
+                                                child: Row(
+                                                  children: [
+                                                    Container(
+                                                      padding: const EdgeInsets.all(6),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.greenAccent.withOpacity(0.15),
+                                                        shape: BoxShape.circle,
                                                       ),
-                                                    ],
-                                                  ),
-                                                ],
+                                                      child: const Icon(Icons.arrow_downward_rounded,
+                                                          color: Colors.greenAccent, size: 14),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        const Text('Income',
+                                                            style: TextStyle(
+                                                                color: Colors.white54, fontSize: 11)),
+                                                        const SizedBox(height: 2),
+                                                        Text(
+                                                          '$currencyCode ${totalIncome.toStringAsFixed(2)}',
+                                                          style: const TextStyle(
+                                                            color: Colors.greenAccent,
+                                                            fontSize: 13.5,
+                                                            fontWeight: FontWeight.bold,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
-                                              const SizedBox(width: 32),
-
-                                              // Expense summary indicator
-                                              Row(
-                                                children: [
-                                                  const Icon(Icons.south_east, color: Colors.redAccent, size: 14),
-                                                  const SizedBox(width: 4),
-                                                  Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                    children: [
-                                                      const Text('Expense',
-                                                          style: TextStyle(color: Colors.redAccent, fontSize: 11)),
-                                                      Text(
-                                                        '$currencyCode${totalExpense.toStringAsFixed(2)}',
-                                                        style: const TextStyle(
-                                                            color: Colors.white,
-                                                            fontSize: 13,
-                                                            fontWeight: FontWeight.bold),
+                                              Container(
+                                                height: 30,
+                                                width: 1,
+                                                color: Colors.white12,
+                                              ),
+                                              const SizedBox(width: 16),
+                                              // Expense
+                                              Expanded(
+                                                child: Row(
+                                                  children: [
+                                                    Container(
+                                                      padding: const EdgeInsets.all(6),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.redAccent.withOpacity(0.15),
+                                                        shape: BoxShape.circle,
                                                       ),
-                                                    ],
-                                                  ),
-                                                ],
+                                                      child: const Icon(Icons.arrow_upward_rounded,
+                                                          color: Colors.redAccent, size: 14),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        const Text('Expense',
+                                                            style: TextStyle(
+                                                                color: Colors.white54, fontSize: 11)),
+                                                        const SizedBox(height: 2),
+                                                        Text(
+                                                          '$currencyCode ${totalExpense.toStringAsFixed(2)}',
+                                                          style: const TextStyle(
+                                                            color: Colors.redAccent,
+                                                            fontSize: 13.5,
+                                                            fontWeight: FontWeight.bold,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
                                             ],
                                           ),
@@ -280,34 +340,50 @@ class BalanceScreen extends StatelessWidget {
                           ),
                         ),
 
-                        // --- SCROLLABLE TRANSACTION LIST ---
+                        // --- TRANSACTION LIST SECTION ---
                         Expanded(
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const SizedBox(height: 16),
-                                const Text(
-                                  'Recent Transactions',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      'Recent Transactions',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${transactions.length} items',
+                                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 10),
+                                const SizedBox(height: 12),
                                 Expanded(
                                   child: transactions.isEmpty
-                                      ? const Center(
-                                    child: Text(
-                                      'No transactions yet',
-                                      style: TextStyle(color: Colors.white38, fontSize: 14),
+                                      ? Center(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.receipt_long_outlined,
+                                            size: 48, color: Colors.white.withOpacity(0.2)),
+                                        const SizedBox(height: 12),
+                                        const Text(
+                                          'No transactions yet',
+                                          style: TextStyle(color: Colors.white38, fontSize: 14),
+                                        ),
+                                      ],
                                     ),
                                   )
                                       : ListView.builder(
                                     itemCount: transactions.length,
-                                    padding: const EdgeInsets.only(bottom: 24),
+                                    padding: const EdgeInsets.only(bottom: 30),
                                     itemBuilder: (context, index) {
                                       final tx = transactions[index];
                                       final bool isIncome = tx.type == 'income';
@@ -330,21 +406,20 @@ class BalanceScreen extends StatelessWidget {
                                         },
                                         child: Container(
                                           margin: const EdgeInsets.only(bottom: 12),
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 14, vertical: 12),
+                                          padding: const EdgeInsets.all(14),
                                           decoration: BoxDecoration(
-                                            color: const Color(0xFF142240),
-                                            borderRadius: BorderRadius.circular(14),
-                                            border: Border.all(color: Colors.white10),
+                                            color: const Color(0xFF18243E),
+                                            borderRadius: BorderRadius.circular(16),
+                                            border: Border.all(color: Colors.white.withOpacity(0.06)),
                                           ),
                                           child: Row(
                                             children: [
-                                              // Category Icon Container
+                                              // Category Icon
                                               Container(
-                                                padding: const EdgeInsets.all(10),
+                                                padding: const EdgeInsets.all(11),
                                                 decoration: BoxDecoration(
-                                                  color: categoryColor.withOpacity(0.2),
-                                                  shape: BoxShape.circle,
+                                                  color: categoryColor.withOpacity(0.18),
+                                                  borderRadius: BorderRadius.circular(12),
                                                 ),
                                                 child: Icon(
                                                   categoryIcon,
@@ -352,24 +427,26 @@ class BalanceScreen extends StatelessWidget {
                                                   size: 20,
                                                 ),
                                               ),
-                                              const SizedBox(width: 12),
+                                              const SizedBox(width: 14),
 
-                                              // Category & Description
+                                              // Title & Category Name
                                               Expanded(
                                                 child: Column(
                                                   crossAxisAlignment: CrossAxisAlignment.start,
                                                   children: [
                                                     Text(
-                                                      tx.category,
+                                                      tx.title,
                                                       style: const TextStyle(
                                                         color: Colors.white,
-                                                        fontSize: 14,
+                                                        fontSize: 14.5,
                                                         fontWeight: FontWeight.bold,
                                                       ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
                                                     ),
-                                                    const SizedBox(height: 2),
+                                                    const SizedBox(height: 3),
                                                     Text(
-                                                      tx.title,
+                                                      tx.category,
                                                       style: const TextStyle(
                                                         color: Colors.white54,
                                                         fontSize: 12,
@@ -380,24 +457,25 @@ class BalanceScreen extends StatelessWidget {
                                                   ],
                                                 ),
                                               ),
+                                              const SizedBox(width: 12),
 
                                               // Amount & Date
                                               Column(
                                                 crossAxisAlignment: CrossAxisAlignment.end,
                                                 children: [
                                                   Text(
-                                                    '$itemCurrency${tx.amount.toStringAsFixed(2)}',
+                                                    '${isIncome ? '+' : '-'}$itemCurrency ${tx.amount.toStringAsFixed(2)}',
                                                     style: TextStyle(
                                                       color: isIncome
                                                           ? Colors.greenAccent
-                                                          : Colors.redAccent,
+                                                          : Colors.white,
                                                       fontWeight: FontWeight.bold,
-                                                      fontSize: 14,
+                                                      fontSize: 14.5,
                                                     ),
                                                   ),
-                                                  const SizedBox(height: 2),
+                                                  const SizedBox(height: 3),
                                                   Text(
-                                                    DateFormat('d/M/yyyy').format(tx.date),
+                                                    DateFormat('MMM d, yyyy').format(tx.date),
                                                     style: const TextStyle(
                                                       color: Colors.white38,
                                                       fontSize: 11,
