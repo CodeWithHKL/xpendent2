@@ -20,46 +20,50 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // If the push notification includes a notification payload, show it locally
-  final RemoteNotification? notification = message.notification;
-  if (notification != null) {
-    final FlutterLocalNotificationsPlugin plugin = FlutterLocalNotificationsPlugin();
+  // Android automatically displays messages that contain a `notification` block.
+  // Only show a local notification manually if it is a data-only push.
+  if (message.notification != null) return;
 
-    // Initialize high importance channel for background display
-    const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      'group_messages_channel',
-      'Group Messages',
-      importance: Importance.max,
-    );
+  final String? title = message.data['title'] as String?;
+  final String? body = message.data['body'] as String?;
+  if (title == null || body == null) return;
 
-    await plugin
-        .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
+  final FlutterLocalNotificationsPlugin plugin =
+  FlutterLocalNotificationsPlugin();
 
-    await plugin.initialize(
-      const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'group_messages_channel',
+    'Group Messages',
+    importance: Importance.max,
+  );
+
+  await plugin
+      .resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+
+  await plugin.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+  );
+
+  await plugin.show(
+    message.hashCode,
+    title,
+    body,
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'group_messages_channel',
+        'Group Messages',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        icon: '@mipmap/ic_launcher',
       ),
-    );
-
-    await plugin.show(
-      notification.hashCode,
-      notification.title,
-      notification.body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'group_messages_channel',
-          'Group Messages',
-          importance: Importance.max,
-          priority: Priority.high,
-          playSound: true,
-          enableVibration: true,
-          icon: '@mipmap/ic_launcher',
-        ),
-      ),
-    );
-  }
+    ),
+  );
 }
 
 // Top-level background worker that polls Firestore on Android when closed
